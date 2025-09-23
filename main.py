@@ -3,6 +3,65 @@ from mpl_toolkits.mplot3d import Axes3D
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 import numpy as np
 
+def get_default_params():
+    """Return default per-part parameters for the geometric human model."""
+    return {
+        'scale': 1.0,
+        'ground': {'size': 2.5, 'grid_step': 0.25, 'z': 0.0},
+        'head': {'center': (0.0, 0.0, 1.65), 'radius': 0.12},
+        'torso': {'center': (0.0, 0.0, 1.1), 'width': 0.4, 'height': 0.25, 'depth': 0.6},
+        'left_upper_arm': {'center': (-0.35, 0.0, 1.25), 'radius': 0.06, 'length': 0.35, 'axis': 'x'},
+        'left_forearm': {'center': (-0.65, 0.0, 1.25), 'radius': 0.05, 'length': 0.35, 'axis': 'x'},
+        'right_upper_arm': {'center': (0.35, 0.0, 1.25), 'radius': 0.06, 'length': 0.35, 'axis': 'x'},
+        'right_forearm': {'center': (0.65, 0.0, 1.25), 'radius': 0.05, 'length': 0.35, 'axis': 'x'},
+        'left_thigh': {'center': (-0.12, 0.0, 0.625), 'radius': 0.07, 'length': 0.35, 'axis': 'z'},
+        'left_shin': {'center': (-0.12, 0.0, 0.275), 'radius': 0.06, 'length': 0.35, 'axis': 'z'},
+        'right_thigh': {'center': (0.12, 0.0, 0.625), 'radius': 0.07, 'length': 0.35, 'axis': 'z'},
+        'right_shin': {'center': (0.12, 0.0, 0.275), 'radius': 0.06, 'length': 0.35, 'axis': 'z'},
+        'hands': {
+            'radius': 0.05,
+            'left_center': (-0.72, 0.0, 1.25),
+            'right_center': (0.72, 0.0, 1.25)
+        },
+        'feet': {
+            'size': (0.18, 0.10, 0.06),
+            'left_center': (-0.12, 0.08, 0.03),
+            'right_center': (0.12, 0.08, 0.03)
+        },
+        'limits': {'x': 1.5, 'y': 1.5, 'z': 2.0}
+    }
+
+def deep_update(base: dict, overrides: dict) -> dict:
+    """Recursively update mapping `base` with `overrides` and return it."""
+    for key, value in overrides.items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            deep_update(base[key], value)
+        else:
+            base[key] = value
+    return base
+
+def add_ground_plane(ax, size=2.5, grid_step=0.25, z=0.0):
+    """Add a flat ground plane with a subtle grid at height z."""
+    half = size
+    plane_vertices = np.array([
+        [-half, -half, z],
+        [ half, -half, z],
+        [ half,  half, z],
+        [-half,  half, z]
+    ])
+    plane_face = [plane_vertices[0], plane_vertices[1], plane_vertices[2], plane_vertices[3]]
+
+    plane = Poly3DCollection([plane_face], facecolors='#2C2F3A', alpha=0.9, edgecolors='none')
+    ax.add_collection3d(plane)
+
+    # draw grid lines
+    grid_color = '#3E4454'
+    al = 0.35
+    ticks = np.arange(-half, half + 1e-6, grid_step)
+    for t in ticks:
+        ax.plot([-half, half], [t, t], [z, z], color=grid_color, alpha=al, linewidth=0.8)
+        ax.plot([t, t], [-half, half], [z, z], color=grid_color, alpha=al, linewidth=0.8)
+
 def create_sphere(center, radius, resolution=20):
     """Create a sphere using spherical coordinates"""
     u = np.linspace(0, 2 * np.pi, resolution)
@@ -72,8 +131,12 @@ def create_box(center, width, height, depth):
     
     return faces
 
-def plot_geometric_human():
-    """Create and plot a geometric human model"""
+def plot_geometric_human(params: dict | None = None):
+    """Create and plot a geometric human model using per-part parameters.
+
+    params: optional dict overriding defaults from `get_default_params()`.
+    Supports a global 'scale' applied to all linear dimensions.
+    """
     fig = plt.figure(figsize=(12, 10))
     ax = fig.add_subplot(111, projection='3d')
     
@@ -81,70 +144,109 @@ def plot_geometric_human():
     fig.patch.set_facecolor('#6B5B95')
     ax.set_facecolor('#4A4A4A')
     
-    # Head (sphere)
-    head_center = (0, 0, 2.5)
-    head_radius = 0.3
+    # Merge params with defaults and compute scale
+    p = deep_update(get_default_params(), params or {})
+    s = float(p['scale'])
+
+    # Ground plane
+    add_ground_plane(
+        ax,
+        size=p['ground']['size'] * s,
+        grid_step=p['ground']['grid_step'] * s,
+        z=p['ground']['z']
+    )
+
+    # Head (sphere) — size from radius formula r = r0 * s
+    head_center = tuple(np.array(p['head']['center']) * np.array([s, s, s]))
+    head_radius = p['head']['radius'] * s
     head_x, head_y, head_z = create_sphere(head_center, head_radius)
     ax.plot_surface(head_x, head_y, head_z, color='#D2B48C', alpha=0.9)
     
-    # Torso (rectangular box)
-    torso_center = (0, 0, 1.5)
-    torso_faces = create_box(torso_center, 0.8, 0.4, 1.2)
+    # Torso (rectangular box) — dimensions scale linearly with s
+    torso_center = tuple(np.array(p['torso']['center']) * np.array([s, s, s]))
+    torso_faces = create_box(
+        torso_center,
+        p['torso']['width'] * s,
+        p['torso']['height'] * s,
+        p['torso']['depth'] * s
+    )
     torso_collection = Poly3DCollection(torso_faces, facecolors='#4A90E2', alpha=0.9, edgecolors='black')
     ax.add_collection3d(torso_collection)
     
-    # Left arm (cylinder)
-    left_arm_center = (-0.7, 0, 1.8)
-    left_arm_x, left_arm_y, left_arm_z = create_cylinder(left_arm_center, 0.1, 0.8, axis='x')
-    ax.plot_surface(left_arm_x, left_arm_y, left_arm_z, color='#4A90E2', alpha=0.9)
+    # Arms: split into upper arm (larger) and forearm (smaller)
+    # Left arm
+    lua_c = p['left_upper_arm']
+    left_upper_arm_center = tuple(np.array(lua_c['center']) * np.array([s, s, s]))
+    lua_x, lua_y, lua_z = create_cylinder(left_upper_arm_center, lua_c['radius'] * s, lua_c['length'] * s, axis=lua_c['axis'])
+    ax.plot_surface(lua_x, lua_y, lua_z, color='#4A90E2', alpha=0.9)
+    lfa_c = p['left_forearm']
+    left_forearm_center = tuple(np.array(lfa_c['center']) * np.array([s, s, s]))
+    lfa_x, lfa_y, lfa_z = create_cylinder(left_forearm_center, lfa_c['radius'] * s, lfa_c['length'] * s, axis=lfa_c['axis'])
+    ax.plot_surface(lfa_x, lfa_y, lfa_z, color='#4A90E2', alpha=0.9)
+
+    # Right arm
+    rua_c = p['right_upper_arm']
+    right_upper_arm_center = tuple(np.array(rua_c['center']) * np.array([s, s, s]))
+    rua_x, rua_y, rua_z = create_cylinder(right_upper_arm_center, rua_c['radius'] * s, rua_c['length'] * s, axis=rua_c['axis'])
+    ax.plot_surface(rua_x, rua_y, rua_z, color='#4A90E2', alpha=0.9)
+    rfa_c = p['right_forearm']
+    right_forearm_center = tuple(np.array(rfa_c['center']) * np.array([s, s, s]))
+    rfa_x, rfa_y, rfa_z = create_cylinder(right_forearm_center, rfa_c['radius'] * s, rfa_c['length'] * s, axis=rfa_c['axis'])
+    ax.plot_surface(rfa_x, rfa_y, rfa_z, color='#4A90E2', alpha=0.9)
     
-    # Right arm (cylinder)
-    right_arm_center = (0.7, 0, 1.8)
-    right_arm_x, right_arm_y, right_arm_z = create_cylinder(right_arm_center, 0.1, 0.8, axis='x')
-    ax.plot_surface(right_arm_x, right_arm_y, right_arm_z, color='#4A90E2', alpha=0.9)
-    
-    # Left leg (cylinder)
-    left_leg_center = (-0.2, 0, 0.4)
-    left_leg_x, left_leg_y, left_leg_z = create_cylinder(left_leg_center, 0.12, 0.8, axis='z')
-    ax.plot_surface(left_leg_x, left_leg_y, left_leg_z, color='#4A90E2', alpha=0.9)
-    
-    # Right leg (cylinder)
-    right_leg_center = (0.2, 0, 0.4)
-    right_leg_x, right_leg_y, right_leg_z = create_cylinder(right_leg_center, 0.12, 0.8, axis='z')
-    ax.plot_surface(right_leg_x, right_leg_y, right_leg_z, color='#4A90E2', alpha=0.9)
+    # Legs: split into thigh (larger) and shin (smaller)
+    # Left leg
+    lth_c = p['left_thigh']
+    left_thigh_center = tuple(np.array(lth_c['center']) * np.array([s, s, s]))
+    lth_x, lth_y, lth_z = create_cylinder(left_thigh_center, lth_c['radius'] * s, lth_c['length'] * s, axis=lth_c['axis'])
+    ax.plot_surface(lth_x, lth_y, lth_z, color='#4A90E2', alpha=0.9)
+    lsh_c = p['left_shin']
+    left_shin_center = tuple(np.array(lsh_c['center']) * np.array([s, s, s]))
+    lsh_x, lsh_y, lsh_z = create_cylinder(left_shin_center, lsh_c['radius'] * s, lsh_c['length'] * s, axis=lsh_c['axis'])
+    ax.plot_surface(lsh_x, lsh_y, lsh_z, color='#4A90E2', alpha=0.9)
+
+    # Right leg
+    rth_c = p['right_thigh']
+    right_thigh_center = tuple(np.array(rth_c['center']) * np.array([s, s, s]))
+    rth_x, rth_y, rth_z = create_cylinder(right_thigh_center, rth_c['radius'] * s, rth_c['length'] * s, axis=rth_c['axis'])
+    ax.plot_surface(rth_x, rth_y, rth_z, color='#4A90E2', alpha=0.9)
+    rsh_c = p['right_shin']
+    right_shin_center = tuple(np.array(rsh_c['center']) * np.array([s, s, s]))
+    rsh_x, rsh_y, rsh_z = create_cylinder(right_shin_center, rsh_c['radius'] * s, rsh_c['length'] * s, axis=rsh_c['axis'])
+    ax.plot_surface(rsh_x, rsh_y, rsh_z, color='#4A90E2', alpha=0.9)
     
     # Hands (small spheres)
-    hand_radius = 0.08
+    hand_radius = p['hands']['radius'] * s
     
     # Left hand
-    left_hand_center = (-1.1, 0, 1.8)
+    left_hand_center = tuple(np.array(p['hands']['left_center']) * np.array([s, s, s]))
     left_hand_x, left_hand_y, left_hand_z = create_sphere(left_hand_center, hand_radius, resolution=10)
     ax.plot_surface(left_hand_x, left_hand_y, left_hand_z, color='#D2B48C', alpha=0.9)
     
     # Right hand
-    right_hand_center = (1.1, 0, 1.8)
+    right_hand_center = tuple(np.array(p['hands']['right_center']) * np.array([s, s, s]))
     right_hand_x, right_hand_y, right_hand_z = create_sphere(right_hand_center, hand_radius, resolution=10)
     ax.plot_surface(right_hand_x, right_hand_y, right_hand_z, color='#D2B48C', alpha=0.9)
     
     # Feet (small boxes)
-    foot_size = (0.3, 0.15, 0.1)
+    foot_size = tuple(np.array(p['feet']['size']) * s)
     
     # Left foot
-    left_foot_center = (-0.2, 0.1, 0)
+    left_foot_center = tuple(np.array(p['feet']['left_center']) * np.array([s, s, s]))
     left_foot_faces = create_box(left_foot_center, *foot_size)
     left_foot_collection = Poly3DCollection(left_foot_faces, facecolors='#2C3E50', alpha=0.9, edgecolors='black')
     ax.add_collection3d(left_foot_collection)
     
     # Right foot
-    right_foot_center = (0.2, 0.1, 0)
+    right_foot_center = tuple(np.array(p['feet']['right_center']) * np.array([s, s, s]))
     right_foot_faces = create_box(right_foot_center, *foot_size)
     right_foot_collection = Poly3DCollection(right_foot_faces, facecolors='#2C3E50', alpha=0.9, edgecolors='black')
     ax.add_collection3d(right_foot_collection)
     
     # Set the aspect ratio and limits
-    ax.set_xlim([-1.5, 1.5])
-    ax.set_ylim([-0.5, 0.5])
-    ax.set_zlim([0, 3])
+    ax.set_xlim([-p['limits']['x'] * s, p['limits']['x'] * s])
+    ax.set_ylim([-p['limits']['y'] * s, p['limits']['y'] * s])
+    ax.set_zlim([0, p['limits']['z'] * s])
     
     # Set title on the figure (keep visible when axes are hidden)
     fig.suptitle('Geometric Human Model', fontsize=16, color='white')
@@ -169,7 +271,7 @@ def create_opengl_version():
     print("This version would provide better performance and more realistic lighting.")
 
 if __name__ == "__main__":
-    # Create and display the geometric human model
+    # Create and display the geometric human model with defaults
     plot_geometric_human()
     
     # Print information about the alternative version
