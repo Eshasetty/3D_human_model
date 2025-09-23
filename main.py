@@ -7,7 +7,15 @@ def get_default_params():
     """Return default per-part parameters for the geometric human model."""
     return {
         'scale': 1.0,
-        'ground': {'size': 2.5, 'grid_step': 0.25, 'z': 0.0},
+        'ground': {
+            'size': 2.5,
+            'grid_step': 0.25,
+            'z': 0.0,
+            'color': '#2C2F3A',
+            'alpha': 0.35,
+            'grid_color': '#3E4454',
+            'grid_alpha': 0.25
+        },
         'head': {'center': (0.0, 0.0, 1.65), 'radius': 0.12},
         'torso': {'center': (0.0, 0.0, 1.1), 'width': 0.4, 'height': 0.25, 'depth': 0.6},
         'left_upper_arm': {'center': (-0.35, 0.0, 1.25), 'radius': 0.06, 'length': 0.35, 'axis': 'x'},
@@ -40,7 +48,7 @@ def deep_update(base: dict, overrides: dict) -> dict:
             base[key] = value
     return base
 
-def add_ground_plane(ax, size=2.5, grid_step=0.25, z=0.0):
+def add_ground_plane(ax, size=2.5, grid_step=0.25, z=0.0, color='#2C2F3A', alpha=0.35, grid_color='#3E4454', grid_alpha=0.25):
     """Add a flat ground plane with a subtle grid at height z."""
     half = size
     plane_vertices = np.array([
@@ -51,16 +59,14 @@ def add_ground_plane(ax, size=2.5, grid_step=0.25, z=0.0):
     ])
     plane_face = [plane_vertices[0], plane_vertices[1], plane_vertices[2], plane_vertices[3]]
 
-    plane = Poly3DCollection([plane_face], facecolors='#2C2F3A', alpha=0.9, edgecolors='none')
+    plane = Poly3DCollection([plane_face], facecolors=color, alpha=alpha, edgecolors='none')
     ax.add_collection3d(plane)
 
     # draw grid lines
-    grid_color = '#3E4454'
-    al = 0.35
     ticks = np.arange(-half, half + 1e-6, grid_step)
     for t in ticks:
-        ax.plot([-half, half], [t, t], [z, z], color=grid_color, alpha=al, linewidth=0.8)
-        ax.plot([t, t], [-half, half], [z, z], color=grid_color, alpha=al, linewidth=0.8)
+        ax.plot([-half, half], [t, t], [z, z], color=grid_color, alpha=grid_alpha, linewidth=0.8)
+        ax.plot([t, t], [-half, half], [z, z], color=grid_color, alpha=grid_alpha, linewidth=0.8)
 
 def create_sphere(center, radius, resolution=20):
     """Create a sphere using spherical coordinates"""
@@ -139,6 +145,7 @@ def plot_geometric_human(params: dict | None = None):
     """
     fig = plt.figure(figsize=(12, 10))
     ax = fig.add_subplot(111, projection='3d')
+    ax.mouse_init()  # ensure drag-to-rotate and scroll-to-zoom are active
     
     # Set the background color to match the purple gradient
     fig.patch.set_facecolor('#6B5B95')
@@ -153,7 +160,11 @@ def plot_geometric_human(params: dict | None = None):
         ax,
         size=p['ground']['size'] * s,
         grid_step=p['ground']['grid_step'] * s,
-        z=p['ground']['z']
+        z=p['ground']['z'],
+        color=p['ground']['color'],
+        alpha=p['ground']['alpha'],
+        grid_color=p['ground']['grid_color'],
+        grid_alpha=p['ground']['grid_alpha']
     )
 
     # Head (sphere) — size from radius formula r = r0 * s
