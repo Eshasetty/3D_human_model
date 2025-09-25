@@ -45,6 +45,16 @@ def get_default_params():
             'move_step': 0.12,
             'picker_size': 100
         },
+        'joints': {
+            'left_arm_angle': 0,
+            'right_arm_angle': 0,
+            'left_leg_angle': 0,
+            'right_leg_angle': 0,
+            'left_elbow_angle': 0,
+            'right_elbow_angle': 0,
+            'left_knee_angle': 0,
+            'right_knee_angle': 0
+        },
         'limits': {'x': 1.5, 'y': 1.5, 'z': 2.0}
     }
 

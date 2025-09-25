@@ -126,6 +126,71 @@ def add_ground_plane(ax, size=2.5, grid_step=0.25, z=0.0, color='#2C2F3A', alpha
         ax.plot(x, y[i], z, color=grid_color, alpha=grid_alpha, linewidth=0.5)
 
 
+def rotate_points(points, angle_deg, axis='z'):
+    """
+    Rotate points around an axis by the given angle in degrees.
+    
+    Args:
+        points: Array of 3D points (N x 3)
+        angle_deg: Rotation angle in degrees
+        axis: 'x', 'y', or 'z' for rotation axis
+        
+    Returns:
+        Rotated points array
+    """
+    angle_rad = np.radians(angle_deg)
+    cos_a, sin_a = np.cos(angle_rad), np.sin(angle_rad)
+    
+    if axis == 'x':
+        rotation_matrix = np.array([
+            [1, 0, 0],
+            [0, cos_a, -sin_a],
+            [0, sin_a, cos_a]
+        ])
+    elif axis == 'y':
+        rotation_matrix = np.array([
+            [cos_a, 0, sin_a],
+            [0, 1, 0],
+            [-sin_a, 0, cos_a]
+        ])
+    else:  # z axis
+        rotation_matrix = np.array([
+            [cos_a, -sin_a, 0],
+            [sin_a, cos_a, 0],
+            [0, 0, 1]
+        ])
+    
+    return points @ rotation_matrix.T
+
+
+def apply_joint_rotation(X, Y, Z, joint_center, angle_deg, axis='x'):
+    """
+    Apply joint rotation to a 3D surface.
+    
+    Args:
+        X, Y, Z: Surface coordinate arrays
+        joint_center: 3D center point of rotation
+        angle_deg: Rotation angle in degrees
+        axis: Rotation axis
+        
+    Returns:
+        Rotated X, Y, Z arrays
+    """
+    if angle_deg == 0:
+        return X, Y, Z
+    
+    # Convert to points array
+    points = np.stack([X.ravel(), Y.ravel(), Z.ravel()], axis=1)
+    
+    # Rotate around joint center
+    rotated_points = rotate_points(points - joint_center, angle_deg, axis) + joint_center
+    
+    # Reshape back to original arrays
+    return (rotated_points[:, 0].reshape(X.shape),
+            rotated_points[:, 1].reshape(Y.shape),
+            rotated_points[:, 2].reshape(Z.shape))
+
+
 def surface_to_quads(X, Y, Z):
     """
     Convert surface mesh to quads for depth sorting.
