@@ -1,7 +1,66 @@
 import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 from mpl_toolkits.mplot3d import Axes3D
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 import numpy as np
+
+class HumanBodyCamera:
+    def __init__(self, image_width=800, image_height=600):
+        # ASSIGN VALUES HERE when creating the camera
+        self.alpha = 500    # Your choice - moderate zoom
+        self.beta = 500     # Usually same as alpha
+        self.x0 = image_width / 2
+        self.y0 = image_height / 2
+        self.image_width = image_width
+        self.image_height = image_height
+        
+        # This intrinsic matrix is now FIXED for this camera
+        self.K = self._build_intrinsic_matrix()
+    
+    def _build_intrinsic_matrix(self):
+        return np.array([[self.alpha, 0, self.x0],
+                        [0, self.beta, self.y0],
+                        [0, 0, 1]])
+    
+    def _calculate_extrinsics(self, camera_position, camera_direction):
+        """Calculate rotation matrix R and translation vector t for camera pose."""
+        # Normalize direction
+        forward = _normalize(camera_direction)
+        world_up = np.array([0, 0, 1])  # Z-up world
+        
+        # Handle case where forward is parallel to world up
+        if abs(np.dot(forward, world_up)) > 0.99:
+            world_up = np.array([1, 0, 0])
+            
+        right = _normalize(np.cross(forward, world_up))
+        up = _normalize(np.cross(right, forward))
+        
+        # Camera coordinate frame: x=right, y=up, z=forward (into scene is negative z)
+        R = np.vstack([right, up, -forward])
+        t = -R @ np.array(camera_position)
+        return R, t
+    
+    def project_points(self, world_points, camera_position, camera_direction):
+        """Project 3D world points to 2D image coordinates using perspective projection."""
+        R, t = self._calculate_extrinsics(camera_position, camera_direction)
+        M = self.K @ np.hstack([R, t.reshape(-1, 1)])
+        
+        # Convert to homogeneous coordinates
+        if world_points.shape[1] == 3:
+            world_homo = np.hstack([world_points, np.ones((world_points.shape[0], 1))])
+        else:
+            world_homo = world_points
+            
+        # Project
+        image_homo = (M @ world_homo.T).T
+        
+        # Convert back to 2D (divide by z)
+        z = image_homo[:, 2]
+        z[abs(z) < 1e-9] = 1e-9  # avoid division by zero
+        image_2d = image_homo[:, :2] / z[:, np.newaxis]
+        
+        return image_2d
 
 def get_default_params():
     """Return default per-part parameters for the geometric human model."""
@@ -35,6 +94,14 @@ def get_default_params():
             'size': (0.18, 0.10, 0.06),
             'left_center': (-0.12, 0.08, 0.03),
             'right_center': (0.12, 0.08, 0.03)
+        },
+        'camera': {
+            'position': (1.0, 0.6, 0.12),
+            'size': (0.12, 0.08, 0.06),
+            'color': '#202225',
+            'lens_radius': 0.02,
+            'move_step': 0.12,
+            'picker_size': 100
         },
         'limits': {'x': 1.5, 'y': 1.5, 'z': 2.0}
     }
@@ -137,7 +204,97 @@ def create_box(center, width, height, depth):
     
     return faces
 
-def plot_geometric_human(params: dict | None = None):
+def draw_camera(ax, position, size, color, lens_radius, picker_size=100):
+    """Draw a small camera as a box with a small lens cylinder; return artists."""
+    cam_faces = create_box(position, *size)
+    cam_box = Poly3DCollection(cam_faces, facecolors=color, alpha=0.9, edgecolors='black', linewidths=0.5)
+    ax.add_collection3d(cam_box)
+
+    # lens: small cylinder on the front face, pointing along +y
+    lens_center = (position[0], position[1] + size[1]/2 + lens_radius/2, position[2])
+    lx, ly, lz = create_cylinder(lens_center, lens_radius, height=lens_radius*1.2, axis='y')
+    lens = ax.plot_surface(lx, ly, lz, color='#4A90E2', alpha=0.9, picker=picker_size)
+
+    return {'box': cam_box, 'lens': lens}
+
+def compute_view_from_camera(camera_pos, target_pos):
+    """Compute (elev, azim) to look from camera_pos toward target_pos for mplot3d.
+
+    Approximates Matplotlib's angle conventions: elev is degrees above the xy-plane,
+    azim rotates around z where azim=0 looks toward -y. We map using arctan2.
+    """
+    v = np.array(target_pos, dtype=float) - np.array(camera_pos, dtype=float)
+    xy = np.hypot(v[0], v[1])
+    r = np.hypot(xy, v[2]) + 1e-9
+    elev = np.degrees(np.arcsin(v[2] / r))
+    azim = np.degrees(np.arctan2(v[0], v[1]))  # map x/y into azim convention
+    return {'elev': float(elev), 'azim': float(azim)}
+
+def center_axes_on_target(ax, center, span):
+    """Center the axes limits on a given 3D point with a cubic span."""
+    cx, cy, cz = center
+    half = span / 2.0
+    ax.set_xlim(cx - half, cx + half)
+    ax.set_ylim(cy - half, cy + half)
+    ax.set_zlim(cz - half, cz + half)
+
+def _normalize(vec):
+    v = np.array(vec, dtype=float)
+    n = np.linalg.norm(v)
+    if n < 1e-9:
+        return v
+    return v / n
+
+def compute_camera_transform(cam_pos, forward=(0, 1, 0), world_up=(0, 0, 1)):
+    """Return rotation R (3x3) and translation t for world->camera coordinates.
+
+    Camera at cam_pos, looking along `forward` in world coordinates. The camera
+    coordinate frame uses: x=right, y=up, z=forward (into scene is negative z).
+    We construct R so that p_cam = R @ (p_world - cam_pos).
+    """
+    f = _normalize(forward)
+    up = _normalize(world_up)
+    # If forward is nearly parallel to up, pick a different up
+    if abs(np.dot(f, up)) > 0.99:
+        up = np.array([1.0, 0.0, 0.0])
+    right = _normalize(np.cross(f, up))
+    up_cam = _normalize(np.cross(right, f))
+    R = np.vstack([right, up_cam, -f])  # rows are basis vectors
+    t = -R @ np.array(cam_pos, dtype=float)
+    return R, t
+
+def transform_surface(X, Y, Z, R, t):
+    pts = np.stack([X.ravel(), Y.ravel(), Z.ravel()], axis=1)
+    pts_cam = (R @ pts.T).T + t
+    Xc = pts_cam[:, 0].reshape(X.shape)
+    Yc = pts_cam[:, 1].reshape(Y.shape)
+    Zc = pts_cam[:, 2].reshape(Z.shape)
+    return Xc, Yc, Zc
+
+def transform_faces(faces, R, t):
+    out = []
+    for face in faces:
+        pts = np.array(face)
+        pts_cam = (R @ pts.T).T + t
+        out.append([tuple(p) for p in pts_cam])
+    return out
+
+def surface_to_quads(X, Y, Z):
+    """Convert a rectilinear surface grid to a list of quad polygons with depth.
+
+    Returns a list of tuples: (mean_z, [(x,y), ... 4 pts])
+    """
+    quads = []
+    ni, nj = X.shape
+    for i in range(ni - 1):
+        for j in range(nj - 1):
+            xs = [X[i, j], X[i+1, j], X[i+1, j+1], X[i, j+1]]
+            ys = [Y[i, j], Y[i+1, j], Y[i+1, j+1], Y[i, j+1]]
+            zs = [Z[i, j], Z[i+1, j], Z[i+1, j+1], Z[i, j+1]]
+            quads.append((float(np.mean(zs)), list(zip(xs, ys))))
+    return quads
+
+def plot_geometric_human(params: dict | None = None, include_camera: bool = True, show: bool = True, set_view: dict | None = None):
     """Create and plot a geometric human model using per-part parameters.
 
     params: optional dict overriding defaults from `get_default_params()`.
@@ -254,6 +411,139 @@ def plot_geometric_human(params: dict | None = None):
     right_foot_collection = Poly3DCollection(right_foot_faces, facecolors='#2C3E50', alpha=0.9, edgecolors='black')
     ax.add_collection3d(right_foot_collection)
     
+    # Camera model
+    cam = p['camera']
+    cam_pos = tuple(np.array(cam['position']) * np.array([s, s, s]))
+    cam_size = tuple(np.array(cam['size']) * s)
+    camera_art = draw_camera(ax, cam_pos, cam_size, cam['color'], cam['lens_radius'] * s, picker_size=cam['picker_size'])
+
+    # Create HumanBodyCamera instance
+    body_camera = HumanBodyCamera(image_width=800, image_height=600)
+
+    # Interactivity: click lens or press 'c' to snapshot; move camera in 3D with keys
+    state = {'cam_pos': np.array(cam_pos, dtype=float), 'body_camera': body_camera}
+
+    def snapshot():
+        # Use HumanBodyCamera for proper perspective projection
+        cam_pos = tuple(state['cam_pos'])
+        target = torso_center
+        camera_direction = np.array(target) - np.array(cam_pos)
+
+        # Use offscreen Agg figure/canvas to avoid interfering with the main window
+        fig2 = Figure(figsize=(8, 6))
+        FigureCanvas(fig2)
+        ax2 = fig2.add_subplot(111)
+        ax2.set_xlim(0, 800)
+        ax2.set_ylim(0, 600)
+        ax2.invert_yaxis()  # Image coordinates: y increases downward
+        ax2.axis('off')
+
+        # Collect all 3D points from body parts and project using HumanBodyCamera
+        camera = state['body_camera']
+        
+        # Sample points from surfaces and project them
+        def sample_and_project_surface(X, Y, Z, color, sample_rate=4):
+            # Sample every nth point to reduce density
+            sampled_x = X[::sample_rate, ::sample_rate]
+            sampled_y = Y[::sample_rate, ::sample_rate]
+            sampled_z = Z[::sample_rate, ::sample_rate]
+            
+            points = np.stack([sampled_x.ravel(), sampled_y.ravel(), sampled_z.ravel()], axis=1)
+            projected = camera.project_points(points, cam_pos, camera_direction)
+            
+            # Filter valid points (within image bounds and in front of camera)
+            valid_mask = (projected[:, 0] >= 0) & (projected[:, 0] <= 800) & \
+                        (projected[:, 1] >= 0) & (projected[:, 1] <= 600)
+            valid_pts = projected[valid_mask]
+            
+            if len(valid_pts) > 0:
+                ax2.scatter(valid_pts[:, 0], valid_pts[:, 1], c=color, s=8, alpha=0.7)
+        
+        def project_box_faces(faces, color):
+            for face in faces:
+                points = np.array(face)
+                projected = camera.project_points(points, cam_pos, camera_direction)
+                # Filter valid points
+                valid_mask = (projected[:, 0] >= 0) & (projected[:, 0] <= 800) & \
+                            (projected[:, 1] >= 0) & (projected[:, 1] <= 600)
+                valid_pts = projected[valid_mask]
+                
+                if len(valid_pts) > 2:  # Need at least 3 points for a triangle
+                    from matplotlib.patches import Polygon
+                    poly = Polygon(valid_pts, closed=True, facecolor=color, alpha=0.6, edgecolor='black', linewidth=0.5)
+                    ax2.add_patch(poly)
+
+        # Project and draw all body parts using HumanBodyCamera
+        sample_and_project_surface(head_x, head_y, head_z, color='#D2B48C', sample_rate=2)
+        project_box_faces(torso_faces, '#4A90E2')
+        sample_and_project_surface(lua_x, lua_y, lua_z, color='#4A90E2')
+        sample_and_project_surface(lfa_x, lfa_y, lfa_z, color='#4A90E2')
+        sample_and_project_surface(rua_x, rua_y, rua_z, color='#4A90E2')
+        sample_and_project_surface(rfa_x, rfa_y, rfa_z, color='#4A90E2')
+        sample_and_project_surface(lth_x, lth_y, lth_z, color='#4A90E2')
+        sample_and_project_surface(lsh_x, lsh_y, lsh_z, color='#4A90E2')
+        sample_and_project_surface(rth_x, rth_y, rth_z, color='#4A90E2')
+        sample_and_project_surface(rsh_x, rsh_y, rsh_z, color='#4A90E2')
+        # hands and feet
+        sample_and_project_surface(left_hand_x, left_hand_y, left_hand_z, color='#D2B48C', sample_rate=2)
+        sample_and_project_surface(right_hand_x, right_hand_y, right_hand_z, color='#D2B48C', sample_rate=2)
+        project_box_faces(left_foot_faces, '#2C3E50')
+        project_box_faces(right_foot_faces, '#2C3E50')
+
+        fig2.savefig('snapshot_from_camera.png', dpi=220, bbox_inches='tight')
+        print('Saved snapshot_from_camera.png from camera POV using HumanBodyCamera')
+
+    def on_pick(event):
+        if event.artist is camera_art['lens']:
+            # Save 2D snapshot from current axes view as a simple effect
+            snapshot()
+
+    def on_key(event):
+        step = cam['move_step'] * s
+        moved = False
+        # X axis
+        if event.key in ('left', 'a'):
+            state['cam_pos'][0] -= step
+            moved = True
+        elif event.key in ('right', 'd'):
+            state['cam_pos'][0] += step
+            moved = True
+        # Y axis
+        elif event.key in ('up', 'w'):
+            state['cam_pos'][1] += step
+            moved = True
+        elif event.key in ('down', 's'):
+            state['cam_pos'][1] -= step
+            moved = True
+        # Z axis
+        elif event.key in ('pageup', 'q'):
+            state['cam_pos'][2] += step
+            moved = True
+        elif event.key in ('pagedown', 'e'):
+            state['cam_pos'][2] -= step
+            moved = True
+        # Snapshot shortcut
+        elif event.key == 'c':
+            snapshot()
+            return
+        if moved:
+            # Redraw camera at new position
+            camera_art['box'].remove()
+            camera_art['lens'].remove()
+            new_art = draw_camera(
+                ax,
+                tuple(state['cam_pos']),
+                cam_size,
+                cam['color'],
+                cam['lens_radius'] * s,
+                picker_size=cam['picker_size']
+            )
+            camera_art.update(new_art)
+            plt.draw()
+
+    fig.canvas.mpl_connect('pick_event', on_pick)
+    fig.canvas.mpl_connect('key_press_event', on_key)
+    
     # Set the aspect ratio and limits
     ax.set_xlim([-p['limits']['x'] * s, p['limits']['x'] * s])
     ax.set_ylim([-p['limits']['y'] * s, p['limits']['y'] * s])
@@ -266,10 +556,15 @@ def plot_geometric_human(params: dict | None = None):
     ax.set_axis_off()
     
     # Set viewing angle
-    ax.view_init(elev=10, azim=45)
+    if set_view is not None:
+        ax.view_init(elev=set_view.get('elev', 10), azim=set_view.get('azim', 45))
+    else:
+        ax.view_init(elev=10, azim=45)
     
     plt.tight_layout()
-    plt.show()
+    if show:
+        plt.show()
+    return fig, ax
 
 # Alternative version using PyOpenGL for more advanced rendering
 def create_opengl_version():
