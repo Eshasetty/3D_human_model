@@ -4,6 +4,7 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 from mpl_toolkits.mplot3d import Axes3D
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 import numpy as np
+from matplotlib.widgets import Slider, Button
 
 class HumanBodyCamera:
     def __init__(self, image_width=800, image_height=600):
@@ -61,6 +62,306 @@ class HumanBodyCamera:
         image_2d = image_homo[:, :2] / z[:, np.newaxis]
         
         return image_2d
+
+def create_camera_control_gui(params=None):
+    """Create a matplotlib-based GUI with camera controls and 3D visualization."""
+    # Create figure with subplots
+    fig = plt.figure(figsize=(16, 10))
+    
+    # Main 3D plot (left side)
+    ax = fig.add_subplot(121, projection='3d')
+    ax.mouse_init()
+    
+    # Control panel (right side)
+    control_ax = fig.add_subplot(122)
+    control_ax.set_xlim(0, 1)
+    control_ax.set_ylim(0, 1)
+    control_ax.axis('off')
+    
+    # Set background colors
+    fig.patch.set_facecolor('#6B5B95')
+    ax.set_facecolor('#4A4A4A')
+    
+    # Merge params with defaults
+    p = deep_update(get_default_params(), params or {})
+    s = float(p['scale'])
+    
+    # Initialize camera position
+    cam_pos = np.array(p['camera']['position']) * s
+    state = {'cam_pos': cam_pos, 'scale': s, 'params': p}
+    
+    # Create body camera
+    body_camera = HumanBodyCamera(image_width=800, image_height=600)
+    state['body_camera'] = body_camera
+    
+    # Build the 3D scene
+    def build_scene():
+        ax.clear()
+        ax.set_facecolor('#4A4A4A')
+        
+        # Ground plane
+        add_ground_plane(
+            ax,
+            size=p['ground']['size'] * s,
+            grid_step=p['ground']['grid_step'] * s,
+            z=p['ground']['z'],
+            color=p['ground']['color'],
+            alpha=p['ground']['alpha'],
+            grid_color=p['ground']['grid_color'],
+            grid_alpha=p['ground']['grid_alpha']
+        )
+        
+        # Head
+        head_center = tuple(np.array(p['head']['center']) * np.array([s, s, s]))
+        head_radius = p['head']['radius'] * s
+        head_x, head_y, head_z = create_sphere(head_center, head_radius)
+        ax.plot_surface(head_x, head_y, head_z, color='#D2B48C', alpha=0.9)
+        
+        # Torso
+        torso_center = tuple(np.array(p['torso']['center']) * np.array([s, s, s]))
+        torso_faces = create_box(
+            torso_center,
+            p['torso']['width'] * s,
+            p['torso']['height'] * s,
+            p['torso']['depth'] * s
+        )
+        torso_collection = Poly3DCollection(torso_faces, facecolors='#4A90E2', alpha=0.9, edgecolors='black')
+        ax.add_collection3d(torso_collection)
+        
+        # Arms and legs (simplified for GUI)
+        # Left arm
+        lua_c = p['left_upper_arm']
+        left_upper_arm_center = tuple(np.array(lua_c['center']) * np.array([s, s, s]))
+        lua_x, lua_y, lua_z = create_cylinder(left_upper_arm_center, lua_c['radius'] * s, lua_c['length'] * s, axis=lua_c['axis'])
+        ax.plot_surface(lua_x, lua_y, lua_z, color='#4A90E2', alpha=0.9)
+        
+        # Right arm
+        rua_c = p['right_upper_arm']
+        right_upper_arm_center = tuple(np.array(rua_c['center']) * np.array([s, s, s]))
+        rua_x, rua_y, rua_z = create_cylinder(right_upper_arm_center, rua_c['radius'] * s, rua_c['length'] * s, axis=rua_c['axis'])
+        ax.plot_surface(rua_x, rua_y, rua_z, color='#4A90E2', alpha=0.9)
+        
+        # Left leg
+        lth_c = p['left_thigh']
+        left_thigh_center = tuple(np.array(lth_c['center']) * np.array([s, s, s]))
+        lth_x, lth_y, lth_z = create_cylinder(left_thigh_center, lth_c['radius'] * s, lth_c['length'] * s, axis=lth_c['axis'])
+        ax.plot_surface(lth_x, lth_y, lth_z, color='#4A90E2', alpha=0.9)
+        
+        # Right leg
+        rth_c = p['right_thigh']
+        right_thigh_center = tuple(np.array(rth_c['center']) * np.array([s, s, s]))
+        rth_x, rth_y, rth_z = create_cylinder(right_thigh_center, rth_c['radius'] * s, rth_c['length'] * s, axis=rth_c['axis'])
+        ax.plot_surface(rth_x, rth_y, rth_z, color='#4A90E2', alpha=0.9)
+        
+        # Camera
+        cam = p['camera']
+        cam_size = tuple(np.array(cam['size']) * s)
+        camera_art = draw_camera(ax, tuple(state['cam_pos']), cam_size, cam['color'], cam['lens_radius'] * s, picker_size=cam['picker_size'])
+        state['camera_art'] = camera_art
+        
+        # Set limits
+        ax.set_xlim([-p['limits']['x'] * s, p['limits']['x'] * s])
+        ax.set_ylim([-p['limits']['y'] * s, p['limits']['y'] * s])
+        ax.set_zlim([0, p['limits']['z'] * s])
+        
+        ax.set_axis_off()
+        ax.view_init(elev=10, azim=45)
+        
+        return torso_center
+    
+    # Build initial scene
+    torso_center = build_scene()
+    state['torso_center'] = torso_center
+    
+    # Create sliders
+    ax_x = plt.axes([0.65, 0.8, 0.3, 0.03])
+    ax_y = plt.axes([0.65, 0.75, 0.3, 0.03])
+    ax_z = plt.axes([0.65, 0.7, 0.3, 0.03])
+    
+    slider_x = Slider(ax_x, 'Camera X', -3, 3, valinit=state['cam_pos'][0], valfmt='%.1f')
+    slider_y = Slider(ax_y, 'Camera Y', -3, 3, valinit=state['cam_pos'][1], valfmt='%.1f')
+    slider_z = Slider(ax_z, 'Camera Z', 0, 4, valinit=state['cam_pos'][2], valfmt='%.1f')
+    
+    # Create buttons
+    ax_left = plt.axes([0.65, 0.55, 0.08, 0.04])
+    ax_right = plt.axes([0.75, 0.55, 0.08, 0.04])
+    ax_up = plt.axes([0.7, 0.6, 0.08, 0.04])
+    ax_down = plt.axes([0.7, 0.5, 0.08, 0.04])
+    ax_forward = plt.axes([0.7, 0.55, 0.08, 0.04])
+    ax_back = plt.axes([0.8, 0.55, 0.08, 0.04])
+    ax_snapshot = plt.axes([0.65, 0.4, 0.3, 0.04])
+    
+    btn_left = Button(ax_left, 'Left')
+    btn_right = Button(ax_right, 'Right')
+    btn_up = Button(ax_up, 'Up')
+    btn_down = Button(ax_down, 'Down')
+    btn_forward = Button(ax_forward, 'Forward')
+    btn_back = Button(ax_back, 'Back')
+    btn_snapshot = Button(ax_snapshot, 'Take Snapshot')
+    
+    # Add labels
+    control_ax.text(0.5, 0.9, 'Camera Controls', fontsize=16, ha='center', weight='bold')
+    control_ax.text(0.5, 0.85, 'Use sliders to control camera position', fontsize=12, ha='center')
+    control_ax.text(0.5, 0.45, 'Quick Movement Buttons', fontsize=14, ha='center', weight='bold')
+    
+    # Update functions
+    def update_camera(val=None):
+        state['cam_pos'] = np.array([slider_x.val, slider_y.val, slider_z.val])
+        build_scene()
+        fig.canvas.draw()
+    
+    def move_camera(dx, dy, dz):
+        state['cam_pos'] += np.array([dx, dy, dz])
+        slider_x.set_val(state['cam_pos'][0])
+        slider_y.set_val(state['cam_pos'][1])
+        slider_z.set_val(state['cam_pos'][2])
+        update_camera()
+    
+    def take_snapshot(event):
+        # Use the HumanBodyCamera to take a proper snapshot with full geometry
+        cam_pos = tuple(state['cam_pos'])
+        target = state['torso_center']
+        camera_direction = np.array(target) - np.array(cam_pos)
+        
+        # Create offscreen figure
+        fig2 = Figure(figsize=(8, 6))
+        FigureCanvas(fig2)
+        ax2 = fig2.add_subplot(111)
+        ax2.set_xlim(0, 800)
+        ax2.set_ylim(0, 600)
+        ax2.invert_yaxis()
+        ax2.axis('off')
+        
+        camera = state['body_camera']
+        
+        # Project all body parts using the camera
+        def project_and_draw_surface(X, Y, Z, color, alpha=0.8):
+            # Sample points from the surface
+            points = np.stack([X.ravel(), Y.ravel(), Z.ravel()], axis=1)
+            projected = camera.project_points(points, cam_pos, camera_direction)
+            
+            # Filter valid points (within image bounds and in front of camera)
+            valid_mask = (projected[:, 0] >= 0) & (projected[:, 0] <= 800) & \
+                        (projected[:, 1] >= 0) & (projected[:, 1] <= 600)
+            valid_pts = projected[valid_mask]
+            
+            if len(valid_pts) > 10:  # Need enough points to form a surface
+                # Create a scatter plot to represent the surface
+                ax2.scatter(valid_pts[:, 0], valid_pts[:, 1], c=color, s=8, alpha=alpha)
+        
+        def project_and_draw_box(faces, color, alpha=0.8):
+            for face in faces:
+                points = np.array(face)
+                projected = camera.project_points(points, cam_pos, camera_direction)
+                
+                # Filter valid points
+                valid_mask = (projected[:, 0] >= 0) & (projected[:, 0] <= 800) & \
+                            (projected[:, 1] >= 0) & (projected[:, 1] <= 600)
+                valid_pts = projected[valid_mask]
+                
+                if len(valid_pts) > 2:  # Need at least 3 points for a polygon
+                    from matplotlib.patches import Polygon
+                    poly = Polygon(valid_pts, closed=True, facecolor=color, alpha=alpha, 
+                                 edgecolor='black', linewidth=0.5)
+                    ax2.add_patch(poly)
+        
+        # Recreate the full body geometry for projection
+        # Head
+        head_center = tuple(np.array(p['head']['center']) * np.array([s, s, s]))
+        head_radius = p['head']['radius'] * s
+        head_x, head_y, head_z = create_sphere(head_center, head_radius)
+        project_and_draw_surface(head_x, head_y, head_z, '#D2B48C', 0.9)
+        
+        # Torso
+        torso_center = tuple(np.array(p['torso']['center']) * np.array([s, s, s]))
+        torso_faces = create_box(
+            torso_center,
+            p['torso']['width'] * s,
+            p['torso']['height'] * s,
+            p['torso']['depth'] * s
+        )
+        project_and_draw_box(torso_faces, '#4A90E2', 0.9)
+        
+        # Arms
+        lua_c = p['left_upper_arm']
+        left_upper_arm_center = tuple(np.array(lua_c['center']) * np.array([s, s, s]))
+        lua_x, lua_y, lua_z = create_cylinder(left_upper_arm_center, lua_c['radius'] * s, lua_c['length'] * s, axis=lua_c['axis'])
+        project_and_draw_surface(lua_x, lua_y, lua_z, '#4A90E2', 0.9)
+        
+        lfa_c = p['left_forearm']
+        left_forearm_center = tuple(np.array(lfa_c['center']) * np.array([s, s, s]))
+        lfa_x, lfa_y, lfa_z = create_cylinder(left_forearm_center, lfa_c['radius'] * s, lfa_c['length'] * s, axis=lfa_c['axis'])
+        project_and_draw_surface(lfa_x, lfa_y, lfa_z, '#4A90E2', 0.9)
+        
+        rua_c = p['right_upper_arm']
+        right_upper_arm_center = tuple(np.array(rua_c['center']) * np.array([s, s, s]))
+        rua_x, rua_y, rua_z = create_cylinder(right_upper_arm_center, rua_c['radius'] * s, rua_c['length'] * s, axis=rua_c['axis'])
+        project_and_draw_surface(rua_x, rua_y, rua_z, '#4A90E2', 0.9)
+        
+        rfa_c = p['right_forearm']
+        right_forearm_center = tuple(np.array(rfa_c['center']) * np.array([s, s, s]))
+        rfa_x, rfa_y, rfa_z = create_cylinder(right_forearm_center, rfa_c['radius'] * s, rfa_c['length'] * s, axis=rfa_c['axis'])
+        project_and_draw_surface(rfa_x, rfa_y, rfa_z, '#4A90E2', 0.9)
+        
+        # Legs
+        lth_c = p['left_thigh']
+        left_thigh_center = tuple(np.array(lth_c['center']) * np.array([s, s, s]))
+        lth_x, lth_y, lth_z = create_cylinder(left_thigh_center, lth_c['radius'] * s, lth_c['length'] * s, axis=lth_c['axis'])
+        project_and_draw_surface(lth_x, lth_y, lth_z, '#4A90E2', 0.9)
+        
+        lsh_c = p['left_shin']
+        left_shin_center = tuple(np.array(lsh_c['center']) * np.array([s, s, s]))
+        lsh_x, lsh_y, lsh_z = create_cylinder(left_shin_center, lsh_c['radius'] * s, lsh_c['length'] * s, axis=lsh_c['axis'])
+        project_and_draw_surface(lsh_x, lsh_y, lsh_z, '#4A90E2', 0.9)
+        
+        rth_c = p['right_thigh']
+        right_thigh_center = tuple(np.array(rth_c['center']) * np.array([s, s, s]))
+        rth_x, rth_y, rth_z = create_cylinder(right_thigh_center, rth_c['radius'] * s, rth_c['length'] * s, axis=rth_c['axis'])
+        project_and_draw_surface(rth_x, rth_y, rth_z, '#4A90E2', 0.9)
+        
+        rsh_c = p['right_shin']
+        right_shin_center = tuple(np.array(rsh_c['center']) * np.array([s, s, s]))
+        rsh_x, rsh_y, rsh_z = create_cylinder(right_shin_center, rsh_c['radius'] * s, rsh_c['length'] * s, axis=rsh_c['axis'])
+        project_and_draw_surface(rsh_x, rsh_y, rsh_z, '#4A90E2', 0.9)
+        
+        # Hands
+        hand_radius = p['hands']['radius'] * s
+        left_hand_center = tuple(np.array(p['hands']['left_center']) * np.array([s, s, s]))
+        left_hand_x, left_hand_y, left_hand_z = create_sphere(left_hand_center, hand_radius)
+        project_and_draw_surface(left_hand_x, left_hand_y, left_hand_z, '#D2B48C', 0.9)
+        
+        right_hand_center = tuple(np.array(p['hands']['right_center']) * np.array([s, s, s]))
+        right_hand_x, right_hand_y, right_hand_z = create_sphere(right_hand_center, hand_radius)
+        project_and_draw_surface(right_hand_x, right_hand_y, right_hand_z, '#D2B48C', 0.9)
+        
+        # Feet
+        foot_size = tuple(np.array(p['feet']['size']) * s)
+        left_foot_center = tuple(np.array(p['feet']['left_center']) * np.array([s, s, s]))
+        left_foot_faces = create_box(left_foot_center, *foot_size)
+        project_and_draw_box(left_foot_faces, '#2C3E50', 0.9)
+        
+        right_foot_center = tuple(np.array(p['feet']['right_center']) * np.array([s, s, s]))
+        right_foot_faces = create_box(right_foot_center, *foot_size)
+        project_and_draw_box(right_foot_faces, '#2C3E50', 0.9)
+        
+        fig2.savefig('snapshot_from_camera.png', dpi=220, bbox_inches='tight')
+        print('Saved snapshot_from_camera.png from camera POV with full geometry')
+    
+    # Bind events
+    slider_x.on_changed(update_camera)
+    slider_y.on_changed(update_camera)
+    slider_z.on_changed(update_camera)
+    
+    btn_left.on_clicked(lambda event: move_camera(-0.2, 0, 0))
+    btn_right.on_clicked(lambda event: move_camera(0.2, 0, 0))
+    btn_up.on_clicked(lambda event: move_camera(0, 0.2, 0))
+    btn_down.on_clicked(lambda event: move_camera(0, -0.2, 0))
+    btn_forward.on_clicked(lambda event: move_camera(0, 0, 0.2))
+    btn_back.on_clicked(lambda event: move_camera(0, 0, -0.2))
+    btn_snapshot.on_clicked(take_snapshot)
+    
+    plt.tight_layout()
+    plt.show()
 
 def get_default_params():
     """Return default per-part parameters for the geometric human model."""
@@ -577,15 +878,11 @@ def create_opengl_version():
     print("This version would provide better performance and more realistic lighting.")
 
 if __name__ == "__main__":
-    # Create and display the geometric human model with defaults
-    plot_geometric_human()
+    # Launch the GUI with camera controls
+    create_camera_control_gui()
     
-    # Print information about the alternative version
-    print("\nGeometric Human Model created!")
-    print("- Head: Sphere (skin color)")
-    print("- Torso: Rectangular box (blue)")
-    print("- Arms: Cylinders (blue)")
-    print("- Legs: Cylinders (blue)")
-    print("- Hands: Small spheres (skin color)")
-    print("- Feet: Small rectangular boxes (dark color)")
-    print("\nYou can modify colors, sizes, and positions by adjusting the parameters in the code.")
+    print("\n3D Human Model with Camera Controls!")
+    print("- Use sliders to control camera X, Y, Z position")
+    print("- Use directional buttons for quick movement")
+    print("- Click 'Take Snapshot' to capture from camera POV")
+    print("- Drag to rotate the 3D view, scroll to zoom")
