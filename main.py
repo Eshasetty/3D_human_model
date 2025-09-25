@@ -173,7 +173,7 @@ def create_camera_control_gui(params=None):
     torso_center = build_scene()
     state['torso_center'] = torso_center
     
-    # Create sliders
+    # Create sliders with better positioning
     ax_x = plt.axes([0.65, 0.8, 0.3, 0.03])
     ax_y = plt.axes([0.65, 0.75, 0.3, 0.03])
     ax_z = plt.axes([0.65, 0.7, 0.3, 0.03])
@@ -181,6 +181,11 @@ def create_camera_control_gui(params=None):
     slider_x = Slider(ax_x, 'Camera X', -3, 3, valinit=state['cam_pos'][0], valfmt='%.1f')
     slider_y = Slider(ax_y, 'Camera Y', -3, 3, valinit=state['cam_pos'][1], valfmt='%.1f')
     slider_z = Slider(ax_z, 'Camera Z', 0, 4, valinit=state['cam_pos'][2], valfmt='%.1f')
+    
+    # Make sure sliders are visible and interactive
+    ax_x.set_facecolor('lightgray')
+    ax_y.set_facecolor('lightgray')
+    ax_z.set_facecolor('lightgray')
     
     # Create buttons
     ax_left = plt.axes([0.65, 0.55, 0.08, 0.04])
@@ -207,8 +212,9 @@ def create_camera_control_gui(params=None):
     # Update functions
     def update_camera(val=None):
         state['cam_pos'] = np.array([slider_x.val, slider_y.val, slider_z.val])
+        print(f"Camera moved to: {state['cam_pos']}")  # Debug output
         build_scene()
-        fig.canvas.draw()
+        fig.canvas.draw_idle()  # Use draw_idle for better performance
     
     def move_camera(dx, dy, dz):
         state['cam_pos'] += np.array([dx, dy, dz])
@@ -228,15 +234,16 @@ def create_camera_control_gui(params=None):
         FigureCanvas(fig2)
         ax2 = fig2.add_subplot(111)
         ax2.set_xlim(0, 800)
-        ax2.set_ylim(0, 600)
-        ax2.invert_yaxis()
+        ax2.set_ylim(600, 0)  # Flip Y-axis to fix upside-down image
         ax2.axis('off')
         
         camera = state['body_camera']
         
-        # Project all body parts using the camera
+        # Project all body parts using the camera with proper depth sorting
+        all_patches = []  # Store all patches for depth sorting
+        
         def project_and_draw_surface(X, Y, Z, color, alpha=0.8):
-            # Sample points from the surface
+            # Sample points from the surface with higher density
             points = np.stack([X.ravel(), Y.ravel(), Z.ravel()], axis=1)
             projected = camera.project_points(points, cam_pos, camera_direction)
             
@@ -245,9 +252,68 @@ def create_camera_control_gui(params=None):
                         (projected[:, 1] >= 0) & (projected[:, 1] <= 600)
             valid_pts = projected[valid_mask]
             
-            if len(valid_pts) > 10:  # Need enough points to form a surface
-                # Create a scatter plot to represent the surface
-                ax2.scatter(valid_pts[:, 0], valid_pts[:, 1], c=color, s=8, alpha=alpha)
+            if len(valid_pts) > 20:  # Need enough points to form a surface
+                # For cylinders, create a polygon that represents the cylinder's silhouette
+                from matplotlib.patches import Polygon
+                
+                # Simple convex hull algorithm using numpy (no scipy needed)
+                def simple_convex_hull(points):
+                    """Simple convex hull using gift wrapping algorithm"""
+                    if len(points) < 3:
+                        return points
+                    
+                    # Find the leftmost point
+                    leftmost = np.argmin(points[:, 0])
+                    hull = [leftmost]
+                    
+                    while True:
+                        candidate = 0
+                        for i in range(len(points)):
+                            if i == hull[-1]:
+                                continue
+                            # Cross product to determine if point is to the left of line
+                            o1 = points[hull[-1]]
+                            o2 = points[candidate]
+                            o3 = points[i]
+                            
+                            cross = (o2[0] - o1[0]) * (o3[1] - o1[1]) - (o2[1] - o1[1]) * (o3[0] - o1[0])
+                            if cross < 0 or (cross == 0 and np.linalg.norm(o3 - o1) > np.linalg.norm(o2 - o1)):
+                                candidate = i
+                        
+                        if candidate == leftmost:
+                            break
+                        hull.append(candidate)
+                    
+                    return np.array([points[i] for i in hull])
+                
+                try:
+                    hull_points = simple_convex_hull(valid_pts[:, :2])
+                    
+                    # Create polygon from hull points
+                    if len(hull_points) >= 3:  # Need at least 3 points for a polygon
+                        polygon = Polygon(hull_points, facecolor=color, alpha=alpha, 
+                                         edgecolor='black', linewidth=0.5)
+                        # Calculate depth for sorting
+                        depth = np.mean([np.linalg.norm(np.array(cam_pos) - np.array([x, y, z])) 
+                                       for x, y, z in zip(X.ravel(), Y.ravel(), Z.ravel())])
+                        all_patches.append((depth, polygon))
+                except:
+                    # Fallback to ellipse if convex hull fails
+                    from matplotlib.patches import Ellipse
+                    min_x, max_x = np.min(valid_pts[:, 0]), np.max(valid_pts[:, 0])
+                    min_y, max_y = np.min(valid_pts[:, 1]), np.max(valid_pts[:, 1])
+                    center_x = (min_x + max_x) / 2
+                    center_y = (min_y + max_y) / 2
+                    width = max_x - min_x
+                    height = max_y - min_y
+                    
+                    if width > 5 and height > 5:
+                        ellipse = Ellipse((center_x, center_y), width, height, 
+                                        facecolor=color, alpha=alpha, 
+                                        edgecolor='black', linewidth=0.5)
+                        depth = np.mean([np.linalg.norm(np.array(cam_pos) - np.array([x, y, z])) 
+                                       for x, y, z in zip(X.ravel(), Y.ravel(), Z.ravel())])
+                        all_patches.append((depth, ellipse))
         
         def project_and_draw_box(faces, color, alpha=0.8):
             for face in faces:
@@ -263,7 +329,9 @@ def create_camera_control_gui(params=None):
                     from matplotlib.patches import Polygon
                     poly = Polygon(valid_pts, closed=True, facecolor=color, alpha=alpha, 
                                  edgecolor='black', linewidth=0.5)
-                    ax2.add_patch(poly)
+                    # Calculate depth for sorting
+                    depth = np.mean([np.linalg.norm(np.array(cam_pos) - np.array(p)) for p in points])
+                    all_patches.append((depth, poly))
         
         # Recreate the full body geometry for projection
         # Head
@@ -324,15 +392,6 @@ def create_camera_control_gui(params=None):
         rsh_x, rsh_y, rsh_z = create_cylinder(right_shin_center, rsh_c['radius'] * s, rsh_c['length'] * s, axis=rsh_c['axis'])
         project_and_draw_surface(rsh_x, rsh_y, rsh_z, '#4A90E2', 0.9)
         
-        # Hands
-        hand_radius = p['hands']['radius'] * s
-        left_hand_center = tuple(np.array(p['hands']['left_center']) * np.array([s, s, s]))
-        left_hand_x, left_hand_y, left_hand_z = create_sphere(left_hand_center, hand_radius)
-        project_and_draw_surface(left_hand_x, left_hand_y, left_hand_z, '#D2B48C', 0.9)
-        
-        right_hand_center = tuple(np.array(p['hands']['right_center']) * np.array([s, s, s]))
-        right_hand_x, right_hand_y, right_hand_z = create_sphere(right_hand_center, hand_radius)
-        project_and_draw_surface(right_hand_x, right_hand_y, right_hand_z, '#D2B48C', 0.9)
         
         # Feet
         foot_size = tuple(np.array(p['feet']['size']) * s)
@@ -344,23 +403,48 @@ def create_camera_control_gui(params=None):
         right_foot_faces = create_box(right_foot_center, *foot_size)
         project_and_draw_box(right_foot_faces, '#2C3E50', 0.9)
         
+        # Sort patches by depth (back to front) and render them
+        all_patches.sort(key=lambda x: x[0], reverse=True)  # Far objects first
+        for depth, patch in all_patches:
+            ax2.add_patch(patch)
+        
         fig2.savefig('snapshot_from_camera.png', dpi=220, bbox_inches='tight')
         print('Saved snapshot_from_camera.png from camera POV with full geometry')
     
-    # Bind events
+    # Bind events with proper function references
     slider_x.on_changed(update_camera)
     slider_y.on_changed(update_camera)
     slider_z.on_changed(update_camera)
     
-    btn_left.on_clicked(lambda event: move_camera(-0.2, 0, 0))
-    btn_right.on_clicked(lambda event: move_camera(0.2, 0, 0))
-    btn_up.on_clicked(lambda event: move_camera(0, 0.2, 0))
-    btn_down.on_clicked(lambda event: move_camera(0, -0.2, 0))
-    btn_forward.on_clicked(lambda event: move_camera(0, 0, 0.2))
-    btn_back.on_clicked(lambda event: move_camera(0, 0, -0.2))
+    # Button callbacks
+    def move_left(event):
+        move_camera(-0.2, 0, 0)
+    
+    def move_right(event):
+        move_camera(0.2, 0, 0)
+    
+    def move_up(event):
+        move_camera(0, 0.2, 0)
+    
+    def move_down(event):
+        move_camera(0, -0.2, 0)
+    
+    def move_forward(event):
+        move_camera(0, 0, 0.2)
+    
+    def move_back(event):
+        move_camera(0, 0, -0.2)
+    
+    btn_left.on_clicked(move_left)
+    btn_right.on_clicked(move_right)
+    btn_up.on_clicked(move_up)
+    btn_down.on_clicked(move_down)
+    btn_forward.on_clicked(move_forward)
+    btn_back.on_clicked(move_back)
     btn_snapshot.on_clicked(take_snapshot)
     
-    plt.tight_layout()
+    # Ensure proper layout and interaction
+    plt.subplots_adjust(left=0.05, right=0.95, top=0.95, bottom=0.05)
     plt.show()
 
 def get_default_params():
