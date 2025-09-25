@@ -45,8 +45,8 @@ class HumanBodyCamera:
         if abs(np.dot(forward, world_up)) > 0.99:
             world_up = np.array([1, 0, 0])
             
-        right = _normalize(np.cross(forward, world_up))
-        up = _normalize(np.cross(right, forward))
+        right = _normalize(np.cross(world_up, forward))
+        up = _normalize(np.cross(forward, right))
         
         # Camera coordinate frame: x=right, y=up, z=forward (into scene is negative z)
         R = np.vstack([right, up, -forward])
